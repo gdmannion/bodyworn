@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Axis BodyWorn Live Viewer</title>
+  <style>
+    body {
+      font-family: "Segoe UI", Roboto, sans-serif;
+      background: #f2f2f2;
+      padding: 1rem 0;
+      margin: 0;
+    }
+
+    .container {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 0 1rem;
+      box-sizing: border-box;
+    }
+
+    header {
+      background: #007acc;
+      color: white;
+      padding: 1rem;
+      margin-bottom: 1rem;
+      text-align: center;
+    }
+
+    #remoteVideo,
+    #info,
+    #events,
+    #errorModal {
+      width: 100%;
+    }
+
+    #remoteVideo {
+      max-width: 100%;
+      height: auto;
+      border: 3px solid #333;
+      margin-bottom: 1rem;
+      background: black;
+    }
+
+    #status {
+      font-weight: bold;
+      margin-bottom: 1rem;
+    }
+
+    #info {
+      background: #fff;
+      padding: 0.5rem;
+      border: 1px solid #ccc;
+      margin-bottom: 1rem;
+    }
+
+    #events {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      max-height: 400px;
+      overflow-y: auto;
+    }
+
+    .event-card {
+      background: #fff;
+      padding: 0.5rem;
+      border-left: 5px solid #007acc;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+      font-family: monospace;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    #buttons {
+      margin-top: 1rem;
+    }
+
+    button {
+      padding: 0.5rem 1rem;
+      font-size: 1rem;
+      background: #007acc;
+      color: white;
+      border: none;
+      cursor: pointer;
+      border-radius: 4px;
+      margin-right: 0.5rem;
+    }
+
+    button:hover {
+      background: #005a99;
+    }
+
+    #errorModal {
+      display: none;
+      background: #ffe6e6;
+      border: 1px solid #cc0000;
+      color: #cc0000;
+      padding: 1rem;
+      margin-top: 1rem;
+      border-radius: 4px;
+      font-weight: bold;
+    }
+
+    @media (max-width: 600px) {
+      header h1 {
+        font-size: 1.25rem;
+      }
+
+      button {
+        width: 100%;
+        margin: 0.25rem 0;
+      }
+
+      #events {
+        max-height: 300px;
+      }
+
+      .event-card {
+        font-size: 0.85rem;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <h1>AXIS BodyWorn Live Viewer</h1>
+  </header>
+
+  <div class="container">
+
+    <div id="info">
+      <div><strong>Status:</strong> <span id="status"> Loading...</span></div>
+    </div>
+
+    <video id="remoteVideo" autoplay playsinline muted controls>
+      Your browser does not support WebRTC.
+    </video>
+
+    <div id="errorModal">
+      <span id="errorText">An error occurred.</span>
+    </div>
+
+    <h2>Event Feed</h2>
+    <div id="events"></div>
+
+  </div>
+
+  <script type="module" src="/static/main.js"></script>
+
+</body>
+</html>
+
