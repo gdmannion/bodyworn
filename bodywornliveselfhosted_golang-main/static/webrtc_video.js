@@ -34,7 +34,7 @@ export function logEventToDOM(data, label = "") {
   eventContainer.appendChild(div); 
 }
 
-async function fetchToken() {
+export async function fetchToken() {
   const res = await fetch("/token");
   const data = await res.json();
   token = data.token;
