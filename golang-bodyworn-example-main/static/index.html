@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Axis Body Worn API (Mock Server)</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 2rem;
+    }
+    h1, h2 {
+      color: #333;
+    }
+    button {
+      margin: 0.5rem;
+      padding: 0.5rem 1rem;
+      font-size: 1rem;
+    }
+    pre {
+      background: #f4f4f4;
+      padding: 1rem;
+      border: 1px solid #ccc;
+      overflow: auto;
+    }
+    .recording {
+      margin-bottom: 1rem;
+      border-bottom: 1px solid #ccc;
+      padding-bottom: 1rem;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>Axis Body Worn Integration API</h1>
+  <p>This is a mock implementation of the Axis Body Worn API using a local filesystem.</p>
+
+  <h2>View Active Metadata</h2>
+  <button onclick="loadActive('Devices')">Devices</button>
+  <button onclick="loadActive('Users')">Users</button>
+  <button onclick="loadActive('System')">System</button>
+  <button onclick="loadActive('RecordingsMKV')">Recordings MKV</button>
+  <button onclick="loadActive('RecordingsMetadata')">Recordings Metadata</button>
+
+  <div id="results" style="margin-top: 2rem;">
+    <h3>Results:</h3>
+    <div id="output">Click a button above to load active metadata...</div>
+  </div>
+
+  <script>
+    let storageAccount = null;
+
+    async function loadConfig() {
+      try {
+        const res = await fetch('/config');
+        const config = await res.json();
+        storageAccount = config.storageAccount;
+      } catch (err) {
+        document.getElementById('output').textContent = 'Failed to load config: ' + err.message;
+      }
+    }
+
+    async function loadActive(container) {
+      const output = document.getElementById('output');
+      output.textContent = `Loading ${container}...`;
+
+      if (!storageAccount) {
+        output.textContent = 'Storage account not loaded.';
+        return;
+      }
+
+      try {
+        const response = await fetch(`/v1.0/${storageAccount}/${container}/active`);
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status} - ${response.statusText}`);
+        }
+
+        const data = await response.json();
+
+        // Render depending on container
+        if (container === "RecordingsMKV") {
+          output.innerHTML = data.map(item => {
+            const filename = item.filename || "(unknown)";
+            return `
+              <div class="recording">
+                <strong>Recording:</strong> ${filename}<br/>
+                <a href="/v1.0/${storageAccount}/${filename}" download>Download .mkv</a>
+              </div>
+            `;
+          }).join('');
+        } else if (container === "RecordingsMetadata") {
+          output.innerHTML = data.map(item => `
+            <div class="recording">
+              <pre>${JSON.stringify(item, null, 2)}</pre>
+            </div>
+          `).join('');
+        } else {
+          // Default case for Devices, Users, System
+          output.innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
+        }
+
+      } catch (err) {
+        output.textContent = `Error fetching ${container}/active:\n${err.message}`;
+      }
+    }
+
+    window.addEventListener('DOMContentLoaded', loadConfig);
+  </script>
+
+</body>
+</html>
+
