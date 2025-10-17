@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 
@@ -22,13 +23,18 @@ import (
 var embeddedStatic embed.FS
 
 var (
-	staticFiles    fs.FS
-	tmpl           *template.Template
-	currentConfig  *auth_bodyworn.FetchConfig
-	eventClients   = make(map[*websocket.Conn]bool)
-	eventClientsMu sync.Mutex
-	targetID       string
-	targetIDMu     sync.RWMutex
+	staticFiles       fs.FS
+	tmpl              *template.Template
+	currentConfig     *auth_bodyworn.FetchConfig
+	eventClients      = make(map[*websocket.Conn]bool)
+	eventClientsMu    sync.Mutex
+	targetID          string
+	targetIDMu        sync.RWMutex
+	cachedToken       string
+	cachedTokenMu     sync.RWMutex
+	lastTokenUpdate   time.Time
+	tokenExpiresAt    time.Time
+	tokenExpiresAtMu  sync.RWMutex
 )
 
 func main() {
@@ -50,8 +56,39 @@ func main() {
 	}
 	currentConfig = config
 
+	// Background token refresh loop
+	go func() {
+		for {
+			token, expiresAt, err := auth_bodyworn.FetchToken(currentConfig.IPAddress, currentConfig.Username, currentConfig.Password)
+			if err != nil {
+				log.Printf(" Failed to refresh token: %v", err)
+				time.Sleep(30 * time.Second)
+				continue
+			}
 
+			cachedTokenMu.Lock()
+			cachedToken = token
+			lastTokenUpdate = time.Now()
+			cachedTokenMu.Unlock()
 
+			tokenExpiresAtMu.Lock()
+			tokenExpiresAt = expiresAt
+			tokenExpiresAtMu.Unlock()
+
+			log.Printf(" Token refreshed at %s (expires at %s)", lastTokenUpdate.Format(time.RFC3339), expiresAt.Format(time.RFC3339))
+
+			// Calculate refresh delay (refresh 10 seconds before expiry)
+			refreshDelay := time.Until(expiresAt.Add(-10 * time.Second))
+			if refreshDelay < 10*time.Second {
+				refreshDelay = 10 * time.Second // safety fallback
+			}
+
+			log.Printf(" Next token refresh in %v", refreshDelay)
+			time.Sleep(refreshDelay)
+		}
+	}()
+
+	// Start event subscription
 	go subscribe_events.StartEventSubscriptionWithCallback(func(msg []byte) {
 		var evt map[string]interface{}
 		if err := json.Unmarshal(msg, &evt); err == nil {
@@ -64,6 +101,7 @@ func main() {
 		broadcastEventToClients(msg)
 	})
 
+	// HTTP routes
 	http.HandleFunc("/events", handleEvents)
 	http.HandleFunc("/token", handleToken)
 	http.HandleFunc("/api/auth", handleAuth)
@@ -71,7 +109,7 @@ func main() {
 	http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticFiles))))
 	http.HandleFunc("/ws-proxy", wsProxyHandler)
 
-	log.Println("Server running at http://0.0.0.0:9090")
+	log.Println(" Server running at http://0.0.0.0:9090")
 	log.Fatal(http.ListenAndServe(":9090", nil))
 }
 
@@ -85,10 +123,17 @@ func handleAuth(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleToken(w http.ResponseWriter, r *http.Request) {
-	token, err := auth_bodyworn.FetchToken(currentConfig.IPAddress, currentConfig.Username, currentConfig.Password)
-	if err != nil {
-		log.Println("Token generation failed")
-		http.Error(w, fmt.Sprintf("Token fetch failed: %v", err), http.StatusInternalServerError)
+	cachedTokenMu.RLock()
+	token := cachedToken
+	lastUpdate := lastTokenUpdate
+	cachedTokenMu.RUnlock()
+
+	tokenExpiresAtMu.RLock()
+	expiry := tokenExpiresAt
+	tokenExpiresAtMu.RUnlock()
+
+	if token == "" {
+		http.Error(w, "Token not initialized yet. Please wait for background refresh.", http.StatusServiceUnavailable)
 		return
 	}
 
@@ -96,13 +141,14 @@ func handleToken(w http.ResponseWriter, r *http.Request) {
 	currentTargetID := targetID
 	targetIDMu.RUnlock()
 
-	log.Println("Token endpoint called")
-	log.Printf("Issued Token: %s", token)
-	log.Printf("TargetID: %s", currentTargetID)
+	log.Println(" Token endpoint called")
+	log.Printf("Returning cached token (refreshed: %s, expires: %s)", lastUpdate.Format(time.RFC3339), expiry.Format(time.RFC3339))
 
 	resp := map[string]string{
-		"token":    token,
-		"targetId": currentTargetID,
+		"token":     token,
+		"targetId":  currentTargetID,
+		"refreshed": lastUpdate.Format(time.RFC3339),
+		"expiresAt": expiry.Format(time.RFC3339),
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -128,7 +174,7 @@ func handleEvents(w http.ResponseWriter, r *http.Request) {
 			delete(eventClients, c)
 			eventClientsMu.Unlock()
 			c.Close()
-			log.Println("Frontend disconnected from /events")
+			log.Println(" Frontend disconnected from /events")
 		}()
 		for {
 			if _, _, err := c.ReadMessage(); err != nil {
@@ -181,13 +227,14 @@ func wsProxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer serverConn.Close()
 
-	log.Println("Proxy connection established")
+	log.Println(" Proxy connection established")
 
+	// Client → Server
 	go func() {
 		for {
 			mt, msg, err := clientConn.ReadMessage()
 			if err != nil {
-				log.Println("📴 Client disconnected:", err)
+				log.Println(" Client disconnected:", err)
 				break
 			}
 			log.Printf("Client → Server: %s", msg)
@@ -195,13 +242,14 @@ func wsProxyHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
+	// Server → Client
 	for {
 		mt, msg, err := serverConn.ReadMessage()
 		if err != nil {
-			log.Println("📴 Signaling server disconnected:", err)
+			log.Println("Signaling server disconnected:", err)
 			break
 		}
-		log.Printf("📥 Server → Client: %s", msg)
+		log.Printf("Server → Client: %s", msg)
 		clientConn.WriteMessage(mt, msg)
 	}
 }
