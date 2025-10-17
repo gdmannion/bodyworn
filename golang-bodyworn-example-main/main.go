@@ -4,9 +4,11 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 
 	"BodyWornAPI/server_development_files"
 )
@@ -16,24 +18,47 @@ const (
 )
 
 func main() {
-
 	log.Println("Starting Axis Body Worn API Server on port", port)
 
-	// Explicitly initialize the logger before any other operations
+	// Initialize logger
 	server.SetLogger(&server.DefaultLogger{})
 
-	// Create required containers and objects
+	// Initialize file structure and required objects
 	server.CreateRequiredContainersAndObjects()
 
-	// Route handlers for authentication and storage
+	// Serve the static index page
+	http.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, "./static/index.html")
+	}))
+
+	// Serve configuration (e.g. StorageAccount) to frontend
+	http.HandleFunc("/config", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"storageAccount": server.StorageAccount,
+		})
+	})
+
+	// Authentication endpoint
 	http.HandleFunc("/auth/v1.0", server.AuthHandler)
-	http.HandleFunc(fmt.Sprintf("/v1.0/%s/", server.StorageAccount), server.StorageHandler)
 
+	// Storage + root file listing handler
+	http.HandleFunc(fmt.Sprintf("/v1.0/%s/", server.StorageAccount), func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, fmt.Sprintf("/v1.0/%s/", server.StorageAccount))
 
+		if path == "" && r.Method == http.MethodGet {
+			// Handle GET /v1.0/<account>/ — return list of root files
+			server.HandleListRootFiles(w, r)
+			return
+		}
 
-	// Start the server
-	err := http.ListenAndServe(port, nil)
-	if err != nil {
-		log.Fatal("Failed to start server: ", err)
+		// Handle standard Swift-style storage operations
+		server.StorageHandler(w, r)
+	})
+
+	// Start server
+	if err := http.ListenAndServe(port, nil); err != nil {
+		log.Fatal("Failed to start server:", err)
 	}
 }
+
