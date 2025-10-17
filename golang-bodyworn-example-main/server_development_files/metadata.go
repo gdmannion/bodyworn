@@ -18,7 +18,6 @@ import (
 // logMetadata prints all X-Container-Meta and X-Object-Meta headers
 func logMetadata(r *http.Request) {
 	log.Println("---- Metadata Details ----")
-	log.Printf("Function logMetadata prints all X-Container-Meta and X-Object-Meta headers ")
 	for k, v := range r.Header {
 		if strings.HasPrefix(strings.ToLower(k), "x-container-meta-") || strings.HasPrefix(strings.ToLower(k), "x-object-meta-") {
 			log.Printf("%s: %s", k, v)
@@ -27,74 +26,60 @@ func logMetadata(r *http.Request) {
 	log.Println("--------------------------")
 }
 
-
-
-// handlePostMetadata updates metadata for a user or device
+// handlePostMetadata updates metadata for an object and saves it as a .meta file
 func handlePostMetadata(w http.ResponseWriter, r *http.Request, path string) {
 	metaPath := filepath.Join(LocalStoragePath, StorageAccount, path+".meta")
-
-	// Check if the parent object exists before updating metadata
 	objPath := filepath.Join(LocalStoragePath, StorageAccount, path)
-	log.Printf("Function handlePostMetadata updates metadata for a user or device ")
+
 	if _, err := os.Stat(objPath); os.IsNotExist(err) {
 		http.Error(w, "Object not found", http.StatusNotFound)
 		log.Printf("Attempted to update metadata for non-existent object %s", path)
 		return
 	}
 
-	// Parse metadata from request headers
 	metadata := parseMetadata(r)
 
-	// Log metadata headers
+	// Auto-inject filename if this is a file
+	if !strings.HasSuffix(path, "/") && !strings.Contains(path, "/") && strings.Contains(path, ".") {
+		metadata["filename"] = filepath.Base(path)
+	}
+
 	logMetadata(r)
 
-	// Convert metadata to JSON and save to .meta file
 	metaContent, err := json.MarshalIndent(metadata, "", "  ")
-	log.Printf("Function handlePostMetadata updates metadata for a user or device ")
 	if err != nil {
 		http.Error(w, "Failed to marshal metadata", http.StatusInternalServerError)
 		log.Printf("Failed to marshal metadata for %s: %v", path, err)
 		return
 	}
 
-	err = os.WriteFile(metaPath, metaContent, 0644)
-	if err != nil {
-		http.Error(w, "Failed to update metadata", http.StatusInternalServerError)
-		log.Printf("Failed to update metadata for %s: %v", path, err)
+	if err := os.WriteFile(metaPath, metaContent, 0644); err != nil {
+		http.Error(w, "Failed to write metadata", http.StatusInternalServerError)
+		log.Printf("Failed to write metadata for %s: %v", path, err)
 		return
 	}
 
 	w.WriteHeader(http.StatusAccepted)
-	log.Printf("Function handlePostMetadata being used to updates metadata for a user or device")
 	log.Printf("Metadata for %s updated successfully", path)
 }
 
-// parseMetadata extracts metadata from HTTP headers
+// parseMetadata extracts all "-meta-" headers from request
 func parseMetadata(r *http.Request) map[string]string {
 	metadata := make(map[string]string)
-
 	for k, v := range r.Header {
 		lowerKey := strings.ToLower(k)
-
 		if strings.Contains(lowerKey, "-meta-") {
-			// Split key like "x-object-meta-name" or "x-container-meta-model"
 			parts := strings.SplitN(lowerKey, "-meta-", 2)
 			if len(parts) == 2 {
-				metaKey := parts[1]
-				metadata[metaKey] = v[0] // Take first value (you can join all if needed)
+				metadata[parts[1]] = v[0]
 			}
 		}
 	}
-	log.Printf("Function parseMetadata capture all -meta- ")
 	log.Printf("Captured metadata: %+v", metadata)
 	return metadata
 }
 
-
-
-
-
-// HEAD handler with metadata
+// handleHeadRequest handles HEAD requests with metadata
 func handleHeadRequest(w http.ResponseWriter, r *http.Request, path string) {
 	fullPath := filepath.Join(LocalStoragePath, StorageAccount, path)
 	metaPath := fullPath + ".meta"
@@ -106,13 +91,11 @@ func handleHeadRequest(w http.ResponseWriter, r *http.Request, path string) {
 		return
 	}
 
-	// Return object or container headers
 	if info.IsDir() {
 		w.Header().Set("X-Container-Object-Count", countObjects(fullPath))
 		w.Header().Set("X-Container-Bytes-Used", calculateSize(fullPath))
 		addMetadataHeaders(w, metaPath, "X-Container-Meta-")
 		w.WriteHeader(http.StatusNoContent)
-		log.Printf("Function handleHeadRequest with metadata")
 		log.Printf("HEAD: Container metadata returned for %s", fullPath)
 	} else {
 		w.Header().Set("Content-Length", fmt.Sprintf("%d", info.Size()))
@@ -121,14 +104,11 @@ func handleHeadRequest(w http.ResponseWriter, r *http.Request, path string) {
 		w.Header().Set("Content-Type", "application/octet-stream")
 		addMetadataHeaders(w, metaPath, "X-Object-Meta-")
 		w.WriteHeader(http.StatusOK)
-		log.Printf("Function handleHeadRequest with metadata")
 		log.Printf("HEAD: Object metadata returned for %s", fullPath)
 	}
 }
 
-
-
-// Add metadata headers to response
+// addMetadataHeaders adds JSON metadata as HTTP headers
 func addMetadataHeaders(w http.ResponseWriter, metaPath, prefix string) {
 	file, err := os.Open(metaPath)
 	if err != nil {
@@ -141,55 +121,130 @@ func addMetadataHeaders(w http.ResponseWriter, metaPath, prefix string) {
 		return
 	}
 
-	// Create a case converter for title case
 	title := cases.Title(language.English)
-
 	for k, v := range meta {
-		// Use the Title case converter from x/text/cases
 		headerKey := prefix + title.String(k)
 		w.Header().Set(headerKey, v)
-		log.Printf("Function addMetadataHeaders add metadata headers to response")
+		log.Printf("Added metadata header: %s = %s", headerKey, v)
 	}
 }
 
-// Helpers
-func generateETag(path string) string {
-	f, err := os.Open(path)
+// handleActiveMetadataRequest returns metadata for active devices/users/system or for all recordings
+func handleActiveMetadataRequest(w http.ResponseWriter, r *http.Request, path string) {
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) != 2 || parts[1] != "active" {
+		http.Error(w, "Invalid active metadata path", http.StatusBadRequest)
+		log.Printf("Invalid path for active metadata: %s", path)
+		return
+	}
+
+	container := parts[0]
+	containerPath := filepath.Join(LocalStoragePath, StorageAccount)
+	if container != "RecordingsMKV" && container != "RecordingsMetadata" {
+		containerPath = filepath.Join(containerPath, container)
+	}
+
+	files, err := os.ReadDir(containerPath)
 	if err != nil {
-		return ""
+		http.Error(w, "Failed to read directory", http.StatusInternalServerError)
+		log.Printf("Failed to read directory %s: %v", containerPath, err)
+		return
 	}
-	defer f.Close()
 
-	hash := md5.New()
-	io.Copy(hash, f)
-	log.Printf("Function generateETag being used")
-	return fmt.Sprintf("%x", hash.Sum(nil))
-}
+	var result []map[string]interface{}
 
-func countObjects(path string) string {
-	files, _ := os.ReadDir(path)
-	log.Printf("Function countObjects being used")
-	return fmt.Sprintf("%d", len(files))
-}
-
-func calculateSize(path string) string {
-	var total int64
-	_ = filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
-		if err == nil && !info.IsDir() {
-			total += info.Size()
+	switch container {
+	case "RecordingsMKV":
+		for _, file := range files {
+			if strings.HasSuffix(file.Name(), ".mkv") {
+				entry := map[string]interface{}{
+					"filename": file.Name(),
+				}
+				result = append(result, entry)
+			}
 		}
-		return nil
-	})
-	log.Printf("Function calculateSize being used")
-	return fmt.Sprintf("%d", total)
+
+	case "RecordingsMetadata":
+		for _, file := range files {
+			if strings.HasSuffix(file.Name(), ".meta") {
+				metaPath := filepath.Join(containerPath, file.Name())
+				content, err := os.ReadFile(metaPath)
+				if err != nil {
+					log.Printf("Failed to read metadata file %s: %v", metaPath, err)
+					continue
+				}
+				var meta map[string]string
+				if err := json.Unmarshal(content, &meta); err != nil {
+					log.Printf("Failed to parse metadata JSON in %s: %v", metaPath, err)
+					continue
+				}
+				entry := make(map[string]interface{})
+				for k, v := range meta {
+					entry[k] = v
+				}
+				result = append(result, entry)
+			}
+		}
+
+	case "Devices", "Users", "System":
+		for _, file := range files {
+			if file.IsDir() || !strings.HasSuffix(file.Name(), ".meta") {
+				continue
+			}
+
+			metaPath := filepath.Join(containerPath, file.Name())
+			content, err := os.ReadFile(metaPath)
+			if err != nil {
+				log.Printf("Failed to read metadata file %s: %v", metaPath, err)
+				continue
+			}
+			var meta map[string]string
+			if err := json.Unmarshal(content, &meta); err != nil {
+				log.Printf("Failed to parse JSON %s: %v", metaPath, err)
+				continue
+			}
+
+			switch container {
+			case "Devices", "Users":
+				if strings.ToLower(meta["active"]) == "true" {
+					entry := make(map[string]interface{})
+					for k, v := range meta {
+						entry[k] = v
+					}
+					result = append(result, entry)
+				}
+			case "System":
+				if _, ok := meta["connectionid"]; ok {
+					entry := make(map[string]interface{})
+					for k, v := range meta {
+						entry[k] = v
+					}
+					result = append(result, entry)
+				}
+			}
+		}
+	default:
+		http.Error(w, "Unsupported container", http.StatusBadRequest)
+		log.Printf("Unsupported container: %s", container)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
+	log.Printf("Active metadata for container %s returned (%d entries)", container, len(result))
 }
 
 
 
-// StorageHandler handles storage requests for GET, PUT, POST, and HEAD operations
+// StorageHandler routes requests for object storage
 func StorageHandler(w http.ResponseWriter, r *http.Request) {
 	prefix := fmt.Sprintf("/v1.0/%s/", StorageAccount)
 	path := strings.TrimPrefix(r.URL.Path, prefix)
+
+	if strings.HasSuffix(path, "/active") && r.Method == http.MethodGet {
+		handleActiveMetadataRequest(w, r, path)
+		return
+	}
 
 	switch r.Method {
 	case http.MethodPut:
@@ -205,3 +260,33 @@ func StorageHandler(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Unsupported method %s for path %s", r.Method, path)
 	}
 }
+
+// Helpers
+func generateETag(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	hash := md5.New()
+	io.Copy(hash, f)
+	return fmt.Sprintf("%x", hash.Sum(nil))
+}
+
+func countObjects(path string) string {
+	files, _ := os.ReadDir(path)
+	return fmt.Sprintf("%d", len(files))
+}
+
+func calculateSize(path string) string {
+	var total int64
+	_ = filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
+		if err == nil && !info.IsDir() {
+			total += info.Size()
+		}
+		return nil
+	})
+	return fmt.Sprintf("%d", total)
+}
+
